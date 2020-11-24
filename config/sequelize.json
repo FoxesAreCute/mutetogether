@@ -1,0 +1,17 @@
+{
+  "development": {
+    "username": "blocktogether",
+    "password": "__PASSWORD__",
+    "database": "blocktogether",
+    "host": "127.0.0.1",
+    "dialect": "mysql"
+  },
+  "production": {
+    "username": "blocktogether",
+    "password": "__PASSWORD__",
+    "database": "blocktogether",
+    "host": "btdbi.blocktogether.org",
+    "port": 15000,
+    "dialect": "mysql"
+  }
+}

@@ -1,0 +1,134 @@
+  {{>header.mustache}}
+  <script defer type='text/javascript' src='/static/show-blocks.js'></script>
+  <script defer type='text/javascript' src='/static/multi-select.js'></script>
+  {{^own_blocks}}
+    User <a href='https://twitter.com/{{author_screen_name}}' class='screen-name'
+      >@{{author_screen_name}}</a>
+    is blocking {{item_count}} users on Twitter (updated {{updated}}).
+    {{#paginate}}
+    Showing {{per_page}} per page.
+    {{/paginate}}
+  </p>
+  {{/own_blocks}}
+  {{#own_blocks}}
+  <p>
+    You are blocking {{item_count}} users on Twitter (updated {{updated}}).
+    {{#paginate}}
+    Showing {{per_page}} per page:
+    {{/paginate}}
+  </p>
+  {{/own_blocks}}
+
+  {{#own_blocks}}
+    <button class='btn btn-info btn-sm unblock needs-selection'
+      disabled='disabled'
+      >Unblock selected</button>
+    <button class='btn btn-info btn-sm unblock-mute needs-selection'
+      disabled='disabled'
+      >Unblock &amp; mute selected</button>
+    </p>
+    <div class='unblock-processing'>
+      Block Together will now perform the actions you requested.
+      This may take some time. You can check on progress at
+      <a href='/actions'>the Actions page</a>.
+    </div>
+  {{/own_blocks}}
+
+  {{! When displaying someone else's blocks, give an option to block and
+      subscribe. }}
+  {{^own_blocks}}
+  {{#subscribed}}
+  You are subscribed to this block list and will auto-block new accounts that
+  are added to it. To unsubscribe, visit <a href='/subscriptions'>the
+  Subscriptions page</a>.
+  {{/subscribed}}
+  {{^subscribed}}
+    {{#too_big}}
+      This block list is too big to subscribe to. Maximum block list size for
+      subscriptions is 125,000.
+    {{/too_big}}
+    {{^too_big}}
+      <p>
+      If you subscribe to @{{author_screen_name}}'s block list, they will be able
+      to see that you are a subscriber and will have the option to unsubscribe you.
+      They will not receive a notification.
+      </p>
+      <div>
+        <button class='btn btn-primary block-all'>Block All and Subscribe</button>
+        <a class='btn btn-primary' href='/#details'>Learn more about Block Together</a>
+        {{>block-all-processing.mustache}}
+        <form class="search_by_screen_name" action="" method="GET">
+          <input id="screen_name" name="screen_name" type="text"></input>
+          <button type="submit" class="btn btn-primary">Search by screen name</button>
+        </form>
+        <a class="btn btn-primary" href="{{shared_blocks_key}}.csv">Download CSV</a>
+      </div>
+    {{/too_big}}
+  {{/subscribed}}
+
+  {{/own_blocks}}
+
+  {{#paginate}}
+  <div id='pagination-bar'>
+    {{>pagination.mustache}}
+  </div>
+  {{/paginate}}
+
+  {{! For use in case there's an error. }}
+  <div id="error-message"></div>
+
+  <table
+    data-shared-blocks-key='{{shared_blocks_key}}'
+    data-author-uid='{{author_uid}}'
+    class='table table-condensed table-hover all-blocks
+      {{#own_blocks}}
+      own-blocks
+      {{/own_blocks}}
+    '>
+    <thead>
+      <tr class='table-header'>
+        <th><input type=checkbox id=check-all></input></th>
+        <th>Screen Name</th>
+        <th>Name</th>
+        <th>Account Created</th>
+        <th>Tweets</th>
+        <th>Following</th>
+        <th>Followers</th>
+      </tr>
+    </thead>
+  {{#item_rows}}
+    <tr class='blocked-user'>
+      <td>
+        <input type='checkbox' class='checkbox' data-uid='{{uid}}'></input>
+      </td>
+      <td>
+       {{#screen_name}} {{! If full user object is available use it. }}
+       <a class='screen-name' href='https://twitter.com/{{screen_name}}'>
+         {{screen_name}}
+       </a>
+       {{/screen_name}}
+       {{^screen_name}} {{! Otherwise just do user id }}
+       <a href='https://twitter.com/intent/user?user_id={{uid}}'>
+          {{uid}}
+       </a>
+       {{/screen_name}}
+      </td>
+      <td>
+        {{name}}
+      </td>
+      <td>
+        {{account_age}}
+      </td>
+      <td>
+        {{statuses_count}}
+      </td>
+      <td>
+        {{friends_count}}
+      </td>
+      <td>
+        {{followers_count}}
+      </td>
+    </tr>
+  {{/item_rows}}
+  </table>
+  {{>footer.mustache}}

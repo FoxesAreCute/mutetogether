@@ -1,0 +1,13 @@
+{
+  "port": [2078, 2079, 2080],
+  "updateBlocks": {
+    "host": "localhost",
+    "port": 8100
+  },
+  "callbackUrl": "https://blocktogether.org/auth/twitter/callback",
+  "secureProxy": true,
+  "userToFollow": "blocktogether",
+  "cookieSecret": "__COOKIE_SECRET__",
+  "consumerKey": "XXXXXXXXXXXXXXXXXXXXXXXXX",
+  "consumerSecret": "YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY"
+}

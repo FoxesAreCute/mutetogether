@@ -1,0 +1,137 @@
+{{>header.mustache}}
+<div class="index">
+  <div class="description">
+    <h1>Block Together</h1>
+    <p>
+    A web app intended to help cope with harassment and abuse on Twitter.
+    </p>
+  </div>
+  {{^logged_in_screen_name}}
+  <div class="signup-prompt">
+    <form action="/auth/twitter" method="POST">
+      <input type="hidden" name="signup" value="true" />
+      <input type="hidden" name="csrf_token" value="{{csrf_token}}" />
+      {{>settings_include.mustache}}
+      <button type="submit" class="btn btn-primary">Sign up using Twitter</button>
+    </form>
+    <br>
+    <div>
+    Block Together will not tweet on your behalf, but it needs read/write
+    access so it can block people when you ask it to. Twitter describes
+    that permission as 'Post tweets for you.'
+    </div>
+  </div>
+  <div class="log-on-prompt">
+    <b>Already using Block Together?</b>
+    <form action="/auth/twitter" method="POST">
+      <input type="hidden" name="csrf_token" value="{{csrf_token}}" />
+      <button type="submit" class="submit btn btn-primary flex-table-btn js-submit"
+        >Log on using Twitter</button>
+    </form>
+  </div>
+  {{/logged_in_screen_name}}
+  <div class="development">
+    <a name='details' href='#details'>
+    <h2>Details</h2>
+    </a>
+    <p>
+    Block Together is designed to reduce the burden of blocking when
+    many accounts are attacking you, or when a few accounts are
+    attacking many people in your community. It uses the Twitter
+    API. If you choose to share your list of blocks, your friends
+    can subscribe to your list so that when you block an account,
+    they block that account automatically. You can also use Block
+    Together without sharing your blocks with anyone.
+    </p>
+
+    <a name='incorrect-blocks' href='#incorrect-blocks'>
+    <h3>Protections from incorrect blocks</h3>
+    </a>
+    <p>
+    Block Together will never block an account you follow, even if it meets one
+    of the above criteria.
+    </p>
+
+    <a name='propagating-forgiveness' href='#propagating-forgiveness'>
+    <h3>Propagating forgiveness</h3>
+    </a>
+    <p>
+    If you subscribe to a block list, you will block every account currently on
+    that list. Later, if the author of that block list blocks more
+    accounts, you will automatically block those as well. If the author of the
+    list unblocks an account, you will automatically unblock it too, but
+    only if you originally blocked it through the shared list. If you blocked
+    the account independently, it will not be unblocked.
+    </p>
+
+    <a name='sharing-block-list' href='#sharing-block-list'>
+    <h3>Sharing your block list</h3>
+    </a>
+    <p>
+    If you choose to share your block list with friends, Block Together will
+    create an unlisted, unguessable URL to access your block list. You can share
+    the URL by email or Direct Message if you want to keep it private among
+    friends, or you can tweet the URL if you are okay sharing your block list
+    publicly. You can always disable sharing from the Settings page. If you do
+    so, the URL to access your blocks will be deleted forever. If you choose to
+    share again in the future, you will create a new, different URL.
+    If you choose to disable sharing, you need to separately remove any
+    subscribers you no longer want, on the Subscriptions page.
+    </p>
+
+    <p>
+    Many people find that they don't want to share their block list because they
+    find there are accounts on it they don't remember blocking, or that aren't
+    particularly abusive. This is partly because Twitter, for a long time, did
+    not offer Mute. So if you wanted to stop seeing a merely unfunny account
+    that gets frequently retweeted, blocking used to be the only fix. Now
+    Twitter offers Mute, so you can Mute those accounts instead. Block Together
+    makes it easy to remove them from your shared block list with the
+    'Unblock and Mute' button on the My Blocks page.
+    </p>
+
+    <a name='suspensions' href='#suspensions'>
+    <h3>Suspensions</h3>
+    </a>
+    <p>
+    Block Together only blocks accounts, it never reports them for spam or
+    abuse. Adding an account to your shared block list will not cause that
+    account to be suspended. People whose accounts get suspended can <a
+    href="https://support.twitter.com/articles/15790-my-account-is-suspended"
+    >contact Twitter Support for more information</a>. An account that uses a
+    block list is not hidden or protected in any way from blocks, abuse reports,
+    or suspensions.
+    </p>
+
+    <a name='limits' href='#limits'>
+    <h3>Limits</h3>
+    </a>
+    <p>
+    The largest size of a shared block list is 125,000 accounts. If your
+    blocklist is larger than this, new people will not be able to subscribe to
+    it. If you remove some accounts from your block list to get it below
+    125,000, people will be able to subscribe to it again.
+    </p>
+
+    <a name='make-it-better' href='#make-it-better'>
+    <h3>Make Block Together better</h3>
+    </a>
+
+    <p>
+    Code is <a href="https://github.com/jsha/blocktogether">here</a>.
+    To get involved:
+    <ul>
+      <li>Visit the
+        <a href="https://github.com/jsha/blocktogether/issues">issues list</a>
+          and report a bug or request a feature.</li>
+      <li>Join the
+        <a href="https://lists.riseup.net/www/arc/blocktogether-help">mailing list</a>.</li>
+      <li>Email <a href="mailto:blocktogether-help@lists.riseup.net"
+          >blocktogether-help@lists.riseup.net</a> (no signup required)</li>
+      <li>Tweet feedback and feature requests to @<a
+        href="https://twitter.com/intent/tweet?text=@j4cob">j4cob</a>.
+      <li>Submit a pull request!</li>
+    </p>
+  </div>
+</div>
+{{>footer.mustache}}

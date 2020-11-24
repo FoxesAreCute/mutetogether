@@ -1,0 +1,97 @@
+th {
+  white-space: nowrap;
+}
+
+.description,
+.signup-prompt,
+.index-logged-in,
+.development,
+.log-on-prompt {
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 35em;
+  overflow: hidden;
+}
+
+#log-on-form {
+  display: inline;
+}
+
+.search_by_screen_name {
+  display: inline;
+}
+
+.search_by_screen_name input#screen_name {
+  display: none;
+}
+
+.signup-prompt,
+.index-logged-in,
+.log-on-prompt {
+  padding: 0.5em;
+  border: 1px solid lightgrey;
+}
+
+.disabled {
+  color: lightgrey;
+}
+
+.example-block-list {
+  padding-left: 2em;
+}
+
+.all-blocks {
+  width: 30em;
+}
+.blocked-user {
+  position: relative;
+}
+.saved {
+  display: none;
+}
+.block-all-processing,
+.unblock-processing {
+  display: none;
+}
+th, td {
+  padding: 0.3em;
+}
+/* Use a serif font for screen names to make look-alike names
+ * like oolon vs ooIon easier to distinguish. */
+.screen-name {
+  font-family: serif;
+}
+
+/* For now, hide checkboxes when viewing someone else's blocks. */
+.all-blocks input[type=checkbox] {
+  display: none;
+}
+.all-blocks.own-blocks input[type=checkbox] {
+  display: block;
+}
+
+.unsubscribe-working {
+  color: grey;
+}
+
+a.unsubscribe {
+  text-decoration: none;
+}
+
+ul.subscriptions {
+  list-style: none;
+}
+
+p, ul {
+  max-width: 35em;
+}
+
+.centered {
+  margin-right: auto;
+  margin-left: auto;
+  max-width: 35em;
+}
+
+#error-message {
+  color: darkred;
+}

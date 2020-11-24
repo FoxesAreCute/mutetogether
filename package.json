@@ -1,0 +1,34 @@
+{
+  "author": "Jacob Hoffman-Andrews",
+  "name": "blocktogether",
+  "description": "Share your blocks",
+  "repository": "https://github.com/jsha/blocktogether.git",
+  "license": "GPL-3.0",
+  "version": "1.7.2",
+  "scripts": {
+    "test": "./node_modules/.bin/casperjs test --log-level=debug --verbose test/integration/*.js",
+    "unblock": "node unblock-all.js $BT_TEST_MAIN_USER"
+  },
+  "dependencies": {
+    "body-parser": "^1.19.0",
+    "cookie-session": "^1.3.3",
+    "express": "^4.17.1",
+    "lodash": "4.17.15",
+    "log4js": "^1.0.1",
+    "mu2": "github:jsha/Mu",
+    "mysql2": "^1.7.0",
+    "node-twitter-api": "github:jsha/node-twitter-api#keepalive",
+    "passport": "0.4.0",
+    "passport-twitter": "^1.0.4",
+    "prom-client": "11.5.3",
+    "prometheus-gc-stats": "0.6.2",
+    "q": "1.5.1",
+    "sequelize": "5.19.6",
+    "sequelize-cli": "5.5.1",
+    "timeago": "^0.1.0"
+  },
+  "devDependencies": {
+    "casperjs": "^1.1.3",
+    "phantomjs-prebuilt": "^2.1.16"
+  }
+}
