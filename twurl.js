@@ -1,10 +1,8 @@
 'use strict';
-(function() {
-
 var twitter = require('./setup').twitter,
     BtUser = require('./setup').BtUser;
 
-BtUser.find({
+BtUser.findOne({
   where: {
     screen_name: process.argv[2]
   }
@@ -26,4 +24,3 @@ BtUser.find({
   }).catch(function(err) {
     process.stdout.write(err + '\n');
   });
-})();

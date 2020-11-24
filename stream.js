@@ -16,13 +16,13 @@ var twitterAPI = require('node-twitter-api'),
 var twitter = setup.twitter,
     logger = setup.logger,
     sequelize = setup.sequelize,
-    remoteUpdateBlocks = setup.remoteUpdateBlocks,
+    remoteUpdatemutes = setup.remoteUpdatemutes,
     Action = setup.Action,
     BtUser = setup.BtUser;
 
 var stats = {
   events: new prom.Counter('events', 'Number of events received from streaming API', ['type']),
-  blocks: new prom.Counter('blocks', 'Number of blocks applied based on the streaming API', ['type']),
+  mutes: new prom.Counter('mutes', 'Number of mutes applied based on the streaming API', ['type']),
   streams: new prom.Gauge('streams', 'Number of active streams.'),
 }
 
@@ -124,11 +124,11 @@ function refreshUsers() {
         },
       },
       ['uid % ? = ?', numWorkers, workerId % numWorkers],
-      // Check for any option that monitors stream for autoblock criteria
+      // Check for any option that monitors stream for automute criteria
       sequelize.or(
-        { block_new_accounts: true },
-        { block_low_followers: true },
-        { shared_blocks_key: { not: null } }
+        { mute_new_accounts: true },
+        { mute_low_followers: true },
+        { shared_mutes_key: { not: null } }
       ))
     }).then(function(users) {
       _.extend(allUsers, _.indexBy(users, 'uid'));
@@ -202,7 +202,7 @@ function startStream(user) {
   // When restarting the service or experiencing downtime, there's a gap in
   // streaming coverage. Make sure we cover any tweets we may have missed.
   // NOTE: Temporarily disabled due to performance issues and repeated enqueues
-  // of already-cancelled blocks.
+  // of already-cancelled mutes.
   //checkPastMentions(user);
 };
 
@@ -224,10 +224,10 @@ function checkPastMentions(user) {
         logger.debug('Replaying', mentions.length, 'past mentions for', user);
         // It's common to have a large number of mentions from each user,
         // because of back-and-forth conversations. De-dupe users before
-        // checking for block criteria.
+        // checking for mute criteria.
         var mentioningUsers = _.indexBy(_.map(mentions, 'user'), 'id_str');
         Object.keys(mentioningUsers).forEach(function(id_str) {
-          checkReplyAndBlock(user, mentioningUsers[id_str]);
+          checkReplyAndmute(user, mentioningUsers[id_str]);
         });
       }
     });
@@ -275,7 +275,7 @@ function endCallback(user, streamStartTime, httpIncomingMessage) {
  * at-replies. TODO: Add sanity check to filter non-at-replies, just in case.
  *
  * On receiving an at-reply, check the age of the sender. If it is less than
- * seven days, block them. Exception: Do not block someone our user already follows.
+ * seven days, mute them. Exception: Do not mute someone our user already follows.
  */
 function dataCallback(recipientBtUser, err, data, ret, res) {
   var recipientUid = recipientBtUser.uid;
@@ -308,40 +308,40 @@ function dataCallback(recipientBtUser, err, data, ret, res) {
   } else if (data.event) {
     stats.events.labels(data.event).inc()
     logger.debug('User', recipientBtUser, 'event', data.event);
-    if (data.event === 'unblock' || data.event === 'block') {
+    if (data.event === 'unmute' || data.event === 'mute') {
       logger.info('User', recipientBtUser, data.event,
         data.target.screen_name, data.target.id_str);
-      handleBlockEvent(recipientBtUser, data);
+      handlemuteEvent(recipientBtUser, data);
     } else if (data.event === 'user_update') {
       verifyCredentials(recipientBtUser);
     } else if (data.event === 'quoted_tweet') {
-      checkReplyAndBlock(recipientBtUser, data.source);
+      checkReplyAndmute(recipientBtUser, data.source);
     }
   } else if (data.text && !data.retweeted_status && data.user) {
     stats.events.labels("text").inc()
     // If user A tweets "@foo hi" and user B retweets it, that should not count
-    // as a mention of @foo for the purposes of blocking. That retweet would
+    // as a mention of @foo for the purposes of muteing. That retweet would
     // show up in the streaming API with text: "@foo hi", as if user B had
     // tweeted it. The way we would tell it was actually a retweet is because
     // it also has the retweeted_status field set.
-    checkReplyAndBlock(recipientBtUser, data.user);
+    checkReplyAndmute(recipientBtUser, data.user);
   }
 }
 
 /**
  * Given a user object from either the streaming API or the REST API,
- * check whether a mention from that user should trigger a block,
+ * check whether a mention from that user should trigger a mute,
  * i.e. whether they are less than 7 days old or have fewer than 15
  * followers, and the receiving user has enabled the appropriate option.
- * If so, enqueue a block.
+ * If so, enqueue a mute.
  *
- * @param {BtUser} recipientBtUser User who might be doing the blocking.
+ * @param {BtUser} recipientBtUser User who might be doing the muteing.
  * @param {Object} mentioningUser A JSON User object as specified by the
  *   Twitter API: https://dev.twitter.com/overview/api/users
  */
 var MIN_AGE = 7;
 var MIN_FOLLOWERS = 15;
-function checkReplyAndBlock(recipientBtUser, mentioningUser) {
+function checkReplyAndmute(recipientBtUser, mentioningUser) {
   // If present, data.user is the user who sent the at-reply.
   if (mentioningUser && mentioningUser.created_at &&
       mentioningUser.id_str !== recipientBtUser.uid) {
@@ -354,14 +354,14 @@ function checkReplyAndBlock(recipientBtUser, mentioningUser) {
       // The user may have changed settings since we started the stream. Reload to
       // get the latest setting.
       recipientBtUser.reload().then(function(user) {
-        if (ageInDays < MIN_AGE && recipientBtUser.block_new_accounts) {
-          logger.info('Queuing block', recipientBtUser, '-->',
+        if (ageInDays < MIN_AGE && recipientBtUser.mute_new_accounts) {
+          logger.info('Queuing mute', recipientBtUser, '-->',
             mentioningUser.screen_name, mentioningUser.id_str);
-          enqueueBlock(recipientBtUser, mentioningUser.id_str, Action.NEW_ACCOUNT);
-        } else if (mentioningUser.followers_count < MIN_FOLLOWERS && recipientBtUser.block_low_followers) {
-          logger.info('Queuing block', recipientBtUser, '-->',
+          enqueuemute(recipientBtUser, mentioningUser.id_str, Action.NEW_ACCOUNT);
+        } else if (mentioningUser.followers_count < MIN_FOLLOWERS && recipientBtUser.mute_low_followers) {
+          logger.info('Queuing mute', recipientBtUser, '-->',
             mentioningUser.screen_name, mentioningUser.id_str);
-          enqueueBlock(recipientBtUser, mentioningUser.id_str, Action.LOW_FOLLOWERS);
+          enqueuemute(recipientBtUser, mentioningUser.id_str, Action.LOW_FOLLOWERS);
         }
       }).catch(function(err) {
         logger.error(err);
@@ -371,56 +371,56 @@ function checkReplyAndBlock(recipientBtUser, mentioningUser) {
 }
 
 /**
- * @type {Object.<string,number>} Currently running timers to check blocks. Used
- * by handleBlockEvent.
+ * @type {Object.<string,number>} Currently running timers to check mutes. Used
+ * by handlemuteEvent.
  */
-var updateBlocksTimers = {};
+var updatemutesTimers = {};
 
 /**
- * Given a block/unblock event from the streaming API, record it in Actions.
- * We will use unblocks so we know not to re-block that user in the future.
- * NOTE: When we perform unblock
+ * Given a mute/unmute event from the streaming API, record it in Actions.
+ * We will use unmutes so we know not to re-mute that user in the future.
+ * NOTE: When we perform unmute
  * actions on a user, they get echoed back to us through the Streaming API.
  * Since the Action we performed in already in the DB, we don't want to insert a
  * different record with cause = 'external'. So we check the DB to avoid
  * recording duplicates.
  *
- * @param {BtUser} recipientBtUser User who received a block / unblock event on their
+ * @param {BtUser} recipientBtUser User who received a mute / unmute event on their
  *   stream.
- * @param {Object} data A JSON unblock event from the Twitter streaming API.
+ * @param {Object} data A JSON unmute event from the Twitter streaming API.
  */
-function handleBlockEvent(recipientBtUser, data) {
-  // Users with very high block counts don't get instant updates triggered by
+function handlemuteEvent(recipientBtUser, data) {
+  // Users with very high mute counts don't get instant updates triggered by
   // the streaming API, because those updates are somewhat costly. Instead their
-  // updates come from the periodic updateBlocks refresh, or from loading their
-  // my-blocks page.
-  if (recipientBtUser.blockCount && recipientBtUser.blockCount > 50000) {
+  // updates come from the periodic updatemutes refresh, or from loading their
+  // my-mutes page.
+  if (recipientBtUser.muteCount && recipientBtUser.muteCount > 50000) {
     return;
   }
-  // When we perform an unblock action, it gets echoed back from the Stream API
+  // When we perform an unmute action, it gets echoed back from the Stream API
   // very quickly - on the order of milliseconds. In order to make sure
   // actions.js has had a chance to write the 'done' status to the DB, we wait a
   // second before checking for duplicates.
-  // Also, if several blocks or unblocks come rapidly, we keep postponing the
-  // updateBlocks call by a second each time. This prevents excessive resource
-  // use when a user does a 'Block all' and many blocks show up in the streaming
+  // Also, if several mutes or unmutes come rapidly, we keep postponing the
+  // updatemutes call by a second each time. This prevents excessive resource
+  // use when a user does a 'mute all' and many mutes show up in the streaming
   // API very rapidly.
-  var timerId = updateBlocksTimers[recipientBtUser.uid];
+  var timerId = updatemutesTimers[recipientBtUser.uid];
   if (timerId) {
     clearTimeout(timerId);
   }
-  updateBlocksTimers[recipientBtUser.uid] = setTimeout(function() {
-    updateNonPendingBlocks(recipientBtUser);
+  updatemutesTimers[recipientBtUser.uid] = setTimeout(function() {
+    updateNonPendingmutes(recipientBtUser);
   }, 2000);
 }
 
 /**
- * Call remote update blocks, but only the the user has zero pending actions.
- * This reduces the amount of work update-blocks.js has to do for users who are
- * in the middle of executing large block lists.
+ * Call remote update mutes, but only the the user has zero pending actions.
+ * This reduces the amount of work update-mutes.js has to do for users who are
+ * in the middle of executing large mute lists.
  * @param {BtUser} recipientBtUser
  */
-function updateNonPendingBlocks(recipientBtUser) {
+function updateNonPendingmutes(recipientBtUser) {
   Action.count({
     where: {
       source_uid: recipientBtUser.uid,
@@ -429,7 +429,7 @@ function updateNonPendingBlocks(recipientBtUser) {
     limit: 1
   }).then(function(count) {
     if (count === 0) {
-      remoteUpdateBlocks(recipientBtUser);
+      remoteUpdatemutes(recipientBtUser);
     }
   }).catch(function(err) {
     logger.error(err);
@@ -437,17 +437,17 @@ function updateNonPendingBlocks(recipientBtUser) {
 }
 
 /**
- * Put a block on the Actions list for this user and process it.
+ * Put a mute on the Actions list for this user and process it.
  * @param {BtUser} sourceUser User who received a mention from a new account
- *   and will block that new account.
+ *   and will mute that new account.
  * @param {string} sinkUserId String-form UID of the author of the mention.
- *   Will be blocked.
+ *   Will be muteed.
  * @param {string} cause One of the valid cause types from Action object
  */
-function enqueueBlock(sourceUser, sinkUserId, cause) {
-  stats.blocks.labels(cause).inc()
+function enqueuemute(sourceUser, sinkUserId, cause) {
+  stats.mutes.labels(cause).inc()
   actions.queueActions(
-    sourceUser.uid, [sinkUserId], Action.BLOCK, cause
+    sourceUser.uid, [sinkUserId], Action.mute, cause
   ).then(function() {
     actions.processActionsForUser(sourceUser);
   }).catch(function(err) {

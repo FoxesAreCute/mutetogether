@@ -1,5 +1,4 @@
 'use strict';
-(function() {
 /** @type{SetupModule} */
 var setup = require('./setup'),
     Q = require('q'),
@@ -17,11 +16,27 @@ var config = setup.config,
     Block = setup.Block;
 
 var stats = {
-  userUpdatesBegun: new prom.Counter('user_updates_begun', 'User updates begun', ['reason']),
-  usersStored: new prom.Counter('users_stored', 'Users stored'),
-  usersSkipped: new prom.Counter('users_skipped', 'Users skipped due to no changes'),
-  usersVerified: new prom.Counter('users_verified', 'Users verified'),
-  inflight: new prom.Gauge('inflight', 'Inflight user lookup requests')
+  userUpdatesBegun: new prom.Counter({
+    name: 'user_updates_begun',
+    help:  'User updates begun',
+    labelNames: ['reason']
+  }),
+  usersStored: new prom.Counter({
+    name: 'users_stored',
+    help:  'Users stored'
+  }),
+  usersSkipped: new prom.Counter({
+    name: 'users_skipped',
+    help:  'Users skipped due to no changes'
+  }),
+  usersVerified: new prom.Counter({
+    name: 'users_verified',
+    help:  'Users verified'
+  }),
+  inflight: new prom.Gauge({
+    name: 'inflight',
+    help:  'Inflight user lookup requests'
+  })
 }
 
 /**
@@ -35,20 +50,26 @@ var stats = {
  * @param {string} reason A string describing the reason for this update.
  */
 function findAndUpdateUsers(sqlFilter, reason) {
+  if (setup.pendingTwitterRequests() > 10000) {
+    logger.info('Skipping processing; too many pending Twitter requests at',
+      setup.pendingTwitterRequests());
+    return;
+  }
   if (stats.inflight.get() >= 200) {
     logger.info('Too may inflight updates, skipping findAndUpdateUsers', stats.inflight.get());
   }
-  TwitterUser
+  return TwitterUser
     .findAll({
-      where: sequelize.and(
+      where: [
         { deactivatedAt: null },
-        sqlFilter),
+        sequelize.literal(sqlFilter)
+      ],
       limit: 1000
     }).then(function(users) {
       if (users && users.length > 0) {
         stats.inflight.inc(users.length)
         stats.userUpdatesBegun.labels(reason).inc(users.length);
-        return updateUsers(_.map(users, 'uid'), _.indexBy(users, 'uid')).then(function(results) {
+        return updateUsers(_.map(users, 'uid'), _.keyBy(users, 'uid')).then(function(results) {
           stats.inflight.inc(-users.length);
           return results;
         });
@@ -67,10 +88,10 @@ function findAndUpdateUsers(sqlFilter, reason) {
  * screen_name on TwitterUser in case it changes.
  */
 function verifyMany() {
-  BtUser
+  return BtUser
     .findAll({
-      where: ['BtUser.uid % 3600 = ?',
-        Math.floor(new Date() / 1000) % 3600],
+      where: sequelize.literal('BtUser.uid % 3600 = ' +
+        Math.floor(new Date() / 1000) % 3600),
       include: [{
         model: TwitterUser
       }]
@@ -80,14 +101,14 @@ function verifyMany() {
         if (btUser.TwitterUser) {
           btUser.screen_name = btUser.TwitterUser.screen_name;
           if (btUser.changed()) {
-            btUser.save().error(function(err) {
-              logger.error(err);
+            btUser.save().catch(function(err) {
+              logger.error("saving user", err);
             });
           }
         }
       });
     }).catch(function(err) {
-      logger.error(err);
+      logger.error("verifying users", err);
     });
 }
 
@@ -106,7 +127,7 @@ function verifyMany() {
  * @param {string} uid User to delete.
  */
 function deactivateTwitterUser(uid) {
-  return TwitterUser.findById(uid)
+  return TwitterUser.findByPk(uid)
     .then(function(twitterUser) {
       if (twitterUser) {
         twitterUser.deactivatedAt = new Date();
@@ -191,7 +212,7 @@ function updateUsersChunk(uids, usersMap) {
     // When a user is suspended, deactivated, or deleted, Twitter will simply not
     // return that user object in the response. Delete those users so they don't
     // clog future lookup attempts.
-    var indexedResponses = _.indexBy(response, 'id_str');
+    var indexedResponses = _.keyBy(response, 'id_str');
     uids.map(function(uid) {
       if (indexedResponses[uid]) {
         storeUser(indexedResponses[uid], usersMap[uid]);
@@ -309,16 +330,27 @@ BtUser.findAll({
   logger.error(err);
 });
 
+/**
+ * Given a function that returns a promise, call it, then each time the promise
+ * resolves, call it again after the provided wait time in millseconds.
+ * @param {Function} fn The function to call
+ * @param {Number} wait Time in milliseconds to wait before calling again.
+ */
+async function updateLoop(fn, wait) {
+  while (true) {
+    await fn();
+    await Q.delay(wait);
+  }
+}
+
 if (require.main === module) {
   logger.info('Starting up.');
   setup.statsServer(6444);
   // Poll for just-added users and do an initial fetch of their information.
-  setInterval(findAndUpdateUsers.bind(null, ['screen_name IS NULL'], 'new'), 5000);
+  updateLoop(findAndUpdateUsers.bind(null, ['screen_name IS NULL'], 'new'), 5000);
   // Poll for users needing update.
-  setInterval(
+  updateLoop(
     findAndUpdateUsers.bind(null, ['updatedAt < (now() - INTERVAL 3 DAY)'], 'stale'), 2500);
   // Every ten seconds, check credentials of some subset of users.
-  setInterval(verifyMany, 10000);
+  updateLoop(verifyMany, 10000);
 }
-
-})();

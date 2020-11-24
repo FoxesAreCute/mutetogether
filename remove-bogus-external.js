@@ -1,5 +1,4 @@
 'use strict';
-(function() {
 /**
  * Script to clean up Actions incorrectly marked as 'external'.
  * A bug in how we record actions
@@ -23,7 +22,7 @@ BtUser
     util.slowForEach(users, 2000, function(user) {
       // Go from oldest actions to newest actions.
       user.getActions({
-        order: 'updatedAt ASC'
+        order: [['updatedAt', 'ASC']]
       }).then(function(actions) {
         var hash = {};
         actions.forEach(function(action) {
@@ -50,4 +49,3 @@ BtUser
   }).catch(function(err) {
     process.stderr.write(err);
   });
-})();

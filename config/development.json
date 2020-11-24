@@ -1,10 +1,9 @@
 {
-  "ports": [3000, 3001, 3002],
   "updateBlocks": {
     "host": "localhost",
     "port": 8100
   },
-  "callbackUrl": "http://localhost:3000/auth/twitter/callback",
+  "callbackUrl": "http://192.168.1.3:3000/auth/twitter/callback",
   "secureProxy": false,
   "cookieSecret": "f46140502de85b9056978961f6377e0eadcfee2a",
   "userToFollow": "test_account",

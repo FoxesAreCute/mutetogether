@@ -1,2 +1,2 @@
 User-agent: *
-Disallow: /show-blocks/
+Disallow: /show-mutes/users/

@@ -1,5 +1,4 @@
 'use strict';
-(function() {
 /**
  * Script to block a list of screen names using credentials for a given user id
  */
@@ -47,7 +46,7 @@ function unblock5000(user) {
 }
 
 BtUser
-  .find({
+  .findOne({
     where: {
       screen_name: process.argv[2]
     }
@@ -63,8 +62,8 @@ BtUser
     }
     return unblockAll().then(function() {
       logger.info('Done.');
+      process.exit(0);
     })
   }).catch(function(err) {
     logger.error(err);
   });
-})();

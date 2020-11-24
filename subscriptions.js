@@ -1,5 +1,4 @@
 'use strict';
-(function() {
 var Q = require('q'),
     _ = require('lodash'),
     setup = require('./setup'),
@@ -35,7 +34,7 @@ function fanoutActions(actions) {
     logger.debug('fanoutActions called with all null actions, skipping.');
     return Q.resolve([]);
   }
-  var source_uids = Object.keys(_.indexBy(actions, 'source_uid'));
+  var source_uids = Object.keys(_.keyBy(actions, 'source_uid'));
   if (source_uids.length > 1) {
     return Q.reject('Bad arg to fanoutActions: multiple sources:', actions);
   }
@@ -58,13 +57,15 @@ function fanoutActions(actions) {
     where: {
       author_uid: source_uids[0]
     }
-  }).then(function(subscriptions) {
+  }).then(async function(subscriptions) {
     if (subscriptions && subscriptions.length > 0) {
       logger.info('Fanning out', actions.length, 'actions from',
         source_uids[0], 'to', subscriptions.length, 'subscribers.');
-      return actions.map(function(action) {
-        return fanoutWithSubscriptions(action, subscriptions);
-      });
+      let result = [];
+      for (let action of actions) {
+        result.push(await fanoutWithSubscriptions(action, subscriptions));
+      }
+      return result;
     } else {
       return Q.resolve([]);
     }
@@ -84,6 +85,8 @@ function fanoutActions(actions) {
  * @return {Promise.<Action[]>}
  */
 function fanoutWithSubscriptions(inputAction, subscriptions) {
+  logger.info("fanoutWithSubscriptions", inputAction.source_uid,
+    "to", subscriptions.length, "subscribers");
   var actions = subscriptions.map(function(subscription) {
     return {
       source_uid: subscription.subscriber_uid,
@@ -102,18 +105,18 @@ function fanoutWithSubscriptions(inputAction, subscriptions) {
     // TODO: This should probably use actions.queueActions to automatically set
     // pendingActions = true. But that function doesn't support queuing multiple
     // actions from different source_uids.
-    return Action.bulkCreate(actions).then(function(actions) {
-      var subscriber_uids = _.map(subscriptions, 'subscriber_uid');
-      return BtUser.findAll({
+    return Action.bulkCreate(actions).then(async function(actions) {
+      let subscriber_uids = _.map(subscriptions, 'subscriber_uid');
+      let subscribers = BtUser.findAll({
         where: {
           uid: subscriber_uids
         }
-      }).then(function(users) {
-        return Q.all(users.map(function(user) {
-          user.pendingActions = true;
-          return user.save();
-        }));
       });
+      await Q.all(subscribers.map(function(subscriber) {
+        subscriber.pendingActions = true;
+        return subscriber.save();
+      }));
+      return null;
     });
   } else {
     // For Unblock Actions, we only want to fan out the unblock to users
@@ -125,7 +128,7 @@ function fanoutWithSubscriptions(inputAction, subscriptions) {
     // would be nice because actions.js can deal with things asynchronously
     // and slow down gracefully under load, but subscription fanout has to
     // happen in the already-complicated updateBlocks call chain.
-    return Q.all(actions.map(unblockFromSubscription));
+    return Q.all(actions.map(unblockFromSubscription)).then(() => null);
   }
 }
 
@@ -149,7 +152,7 @@ function unblockFromSubscription(proposedUnblock) {
   // We want to make sure we look at the most recent block, even if it doesn't
   // match on cause_uid, because we specifically want to notice the case where
   // the most recent block was manual.
-  return Action.find({
+  return Action.findOne({
     where: {
       type: Action.BLOCK,
       source_uid: proposedUnblock.source_uid,
@@ -164,7 +167,7 @@ function unblockFromSubscription(proposedUnblock) {
       // out when executing actions.'
       status: Action.DONE
     },
-    order: 'updatedAt DESC'
+    order: [['updatedAt', 'DESC']]
   }).then(function(prevAction) {
     // All three of these cases are normal and expected: the user never blocked
     // the target; the user did block the target due to a subscription, and the
@@ -192,12 +195,12 @@ function unblockFromSubscription(proposedUnblock) {
  */
 function getLatestBlocks(uid) {
   logger.debug('Getting latest blocks for', uid);
-  return BlockBatch.find({
+  return BlockBatch.findOne({
     where: {
       source_uid: uid,
       complete: true
     },
-    order: 'updatedAt desc'
+    order: [['updatedAt', 'desc']]
   }).then(function(blockBatch) {
     if (blockBatch) {
       return Block.findAll({
@@ -229,7 +232,7 @@ function getManualUnblocks(uid) {
       cause: [Action.EXTERNAL, Action.BULK_MANUAL_BLOCK]
     }
   }).then(function(actions) {
-    return _.indexBy(actions, 'sink_uid');
+    return _.keyBy(actions, 'sink_uid');
   });
 }
 
@@ -289,7 +292,7 @@ function deleteFromObject(obj, array) {
  * @param {string} uid
  */
 function fixUp(uid) {
-  return BtUser.find({
+  return BtUser.findOne({
     where: {
       uid: uid
     },
@@ -349,7 +352,7 @@ function fixUpReadyUser(user) {
       // lists, the remove the ones already blocked and the ones previously
       // unblocked manually. What's left is who we should block.
       var toBeBlocked = _.clone(blocksAuthors);
-      var currentlyBlocked = _.indexBy(blocks, 'sink_uid');
+      var currentlyBlocked = _.keyBy(blocks, 'sink_uid');
       deleteFromObject(toBeBlocked, Object.keys(currentlyBlocked));
       deleteFromObject(toBeBlocked, Object.keys(unblocks));
       // Don't try to block self.
@@ -404,13 +407,13 @@ function fixUpReadyUser(user) {
           'status': Action.DONE,
           type: [Action.BLOCK, Action.UNBLOCK]
         },
-        order: 'updatedAt asc'
+        order: [['updatedAt', 'asc']]
       }).then(function(actions) {
-        // indexBy will overwrite earlier entries with later ones, so for each
+        // keyBy will overwrite earlier entries with later ones, so for each
         // action we get the most recent one. Use this to get a list of actions
         // where each action is only the most recent for that sink_uid.
-        var uniquedActions = _.values(_.indexBy(actions, 'sink_uid'));
-        var currentlySubscribed = _.indexBy(user.Subscriptions, 'author_uid');
+        var uniquedActions = _.values(_.keyBy(actions, 'sink_uid'));
+        var currentlySubscribed = _.keyBy(user.Subscriptions, 'author_uid');
         var actionsToReverse = _.filter(uniquedActions, function(action) {
           var sink_uid = action.sink_uid;
           // We only care about blocks, and only blocks caused by a subscription
@@ -454,5 +457,3 @@ if (require.main === module) {
 module.exports = {
   fanoutActions: fanoutActions,
 }
-
-})();

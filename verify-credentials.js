@@ -1,6 +1,4 @@
 'use strict';
-(function() {
-
 var logger = require('./setup').logger,
     twitter = require('./setup').twitter,
     BtUser = require('./setup').BtUser;
@@ -65,8 +63,8 @@ function verifyCredentials(user) {
       }
       user.screen_name = response.screen_name;
       if (user.changed()) {
-        user.save().error(function(err) {
-          logger.error(err);
+        user.save().catch(function(err) {
+          logger.error("saving user", err);
         });
       }
   });
@@ -75,7 +73,5 @@ function verifyCredentials(user) {
 module.exports = verifyCredentials;
 
 if (require.main === module) {
-  BtUser.findById(process.argv[2]).then(verifyCredentials);
+  BtUser.findByPk(process.argv[2]).then(verifyCredentials);
 }
-
-})();

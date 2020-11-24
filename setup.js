@@ -1,15 +1,13 @@
 'use strict';
-(function() {
-var fs = require('fs'),
+const fs = require('fs'),
     path = require('path'),
     tls = require('tls'),
     https = require('https'),
     Q = require('q'),
     twitterAPI = require('node-twitter-api'),
     log4js = require('log4js'),
-    https = require('https'),
-    promRegister = require('prom-client/lib/register'),
     prom = require('prom-client'),
+    gcStats = require('prometheus-gc-stats'),
     _ = require('lodash');
 
 /*
@@ -26,30 +24,48 @@ var nodeEnv = process.env['NODE_ENV'] || 'development';
 var configData = fs.readFileSync(path.join(configDir, 'config.json'), 'utf8');
 var config = JSON.parse(configData);
 
+prom.collectDefaultMetrics({timeout: 5000})
+const startGcStats = gcStats(prom.register);
+startGcStats();
+
 var stats = {
-  twitterSockets: new prom.Gauge('twitter_sockets', 'Number of open sockets to Twitter API'),
-  twitterRequests: new prom.Gauge('twitter_requests', 'Number of pending requests to Twitter API')
+  twitterSockets: new prom.Gauge({
+    name: 'twitter_sockets',
+    help: 'Number of open sockets to Twitter API'
+  }),
+  twitterRequests: new prom.Gauge({
+    name: 'twitter_requests',
+    help: 'Number of pending requests to Twitter API'
+  })
 }
 
 var twitter = new twitterAPI({
     consumerKey: config.consumerKey,
     consumerSecret: config.consumerSecret
 });
-setInterval(function() {
-  var requests = twitter.keepAliveAgent.requests;
-  var totalRequests = 0;
-  for (var host in requests) {
-    totalRequests += requests[host].length;
-  }
-  stats.twitterRequests.set(totalRequests);
+twitter.keepAliveAgent.maxSockets = 36;
+twitter.keepAliveAgent.keepAliveMsecs = 10 * 60 * 1000;
 
-  var sockets = twitter.keepAliveAgent.sockets;
-  var totalSockets = 0;
-  for (host in sockets) {
-    totalSockets += sockets[host].length;
+function sumLengths(map) {
+  var total = 0;
+  for (var key in map) {
+    total += map[key].length;
   }
-  stats.twitterSockets.set(totalSockets);
-}, 1000);
+  return total
+}
+
+function pendingTwitterRequests() {
+  return sumLengths(twitter.keepAliveAgent.requests);
+}
+
+function openTwitterSockets() {
+  return sumLengths(twitter.keepAliveAgent.sockets);
+}
+
+setInterval(function() {
+  stats.twitterRequests.set(pendingTwitterRequests());
+  stats.twitterSockets.set(openTwitterSockets());
+}, 1000).unref();
 
 log4js.configure(path.join(configDir, nodeEnv, '/log4js.json'), {
   cwd: '/data/blocktogether/shared/log'
@@ -68,8 +84,7 @@ var Sequelize = require('sequelize'),
       dialectOptions: _.extend(c.dialectOptions || {}, {
         bigNumberStrings: true,
         supportBigNumbers: true,
-        charset: "utf8mb4",
-        collate: "utf8mb4_unicode_ci"
+        charset: "utf8mb4"
       }),
       logging: function(message) {
         logger.trace(message);
@@ -77,8 +92,9 @@ var Sequelize = require('sequelize'),
     }));
 sequelize
   .authenticate()
-  .error(function(err) {
-    logger.error('Unable to connect to the database:', err);
+  .catch(function(err) {
+    logger.fatal('Unable to connect to the database:', err.name);
+    process.exit(85);
   });
 
 // Use snake_case for model accessors because that's SQL style.
@@ -141,17 +157,15 @@ var BtUser = sequelize.define('BtUser', {
   paused: { type: Sequelize.BOOLEAN, defaultValue: false },
   // The number of blocks this user had at last fetch.
   blockCount: { type: Sequelize.INTEGER, defaultValue: 0 },
-}, {
-  instanceMethods: {
-    /**
-     * When logging a BtUser object, output just its screen name and uid.
-     * To log all values, specify user.dataValues.
-     */
-    inspect: function() {
-      return [this.screen_name, this.uid].join(" ");
-    },
-  }
 });
+
+/**
+ * When logging a BtUser object, output just its screen name and uid.
+ * To log all values, specify user.dataValues.
+ */
+BtUser.prototype.inspect = function () {
+  return [this.screen_name, this.uid].join(" ");
+};
 BtUser.hasOne(TwitterUser, {foreignKey: 'uid'});
 
 var Subscription = sequelize.define('Subscription', {
@@ -217,19 +231,18 @@ var Action = sequelize.define('Action', {
   // the cause_uid is empty.
   cause: { type: 'TINYINT', field: 'causeNum' },
   cause_uid: Sequelize.BIGINT.UNSIGNED
-}, {
-  instanceMethods: {
-    status_str: function() {
-      return Action.statusNames[this.status];
-    },
-    cause_str: function() {
-      return Action.causeNames[this.cause];
-    },
-    type_str: function() {
-      return Action.typeNames[this.type];
-    }
-  }
 });
+
+Action.prototype.status_str = function() {
+  return Action.statusNames[this.status];
+};
+Action.prototype.cause_str = function() {
+  return Action.causeNames[this.cause];
+};
+Action.prototype.type_str = function() {
+  return Action.typeNames[this.type];
+};
+
 // From a BtUser we want to get a list of Actions.
 BtUser.hasMany(Action, {foreignKey: 'source_uid'});
 // And from an Action we want to get a TwitterUser (to show screen name).
@@ -266,7 +279,8 @@ Action.causeConstants = [
   "SUBSCRIPTION",
   "NEW_ACCOUNT",
   "LOW_FOLLOWERS",
-  "BULK_MANUAL_BLOCK"
+  "BULK_MANUAL_BLOCK",
+  "UNBLOCK_ALL"
 ];
 Action.causeNames = [];
 for (var i = 0; i < Action.causeConstants.length; i++) {
@@ -300,14 +314,14 @@ Action.type_str = function() {
 // Initially blank, and loaded asynchronously. It's unlikely the
 // variable will be referenced before it is initialized.
 var userToFollow = BtUser.build();
-BtUser.find({
+BtUser.findOne({
   where: {
     screen_name: config.userToFollow
   }
 }).then(function(user) {
   _.assign(userToFollow, user);
 }).catch(function(err) {
-  logger.error(err);
+  logger.error("Finding user to follow:", err);
 });
 
 var keepAliveAgent = new https.Agent({
@@ -342,7 +356,7 @@ function remoteUpdateBlocks(user) {
     // Ignore ECONNRESET: The server will occasionally close the socket, which
     // is fine.
     if (err.code != 'ECONNRESET') {
-      logger.error(err);
+      logger.error("Updating blocks:", err);
       deferred.reject(err);
     }
   });
@@ -359,13 +373,10 @@ function gracefulShutdown() {
 function statsServer(port) {
   var tlsOpts = {
     key: fs.readFileSync(path.join(configDir, 'rpc.key')),
-    cert: fs.readFileSync(path.join(configDir, 'rpc.crt')),
-    ca: fs.readFileSync(path.join(configDir, 'rpc.crt')),
-    requestCert: true,
-    rejectUnauthorized: true
+    cert: fs.readFileSync(path.join(configDir, 'rpc.crt'))
   };
   var server = https.createServer(tlsOpts, function (req, res) {
-    res.end(promRegister.metrics());
+    res.end(prom.register.metrics());
   });
   server.unref();
   server.listen(port);
@@ -392,9 +403,9 @@ module.exports = {
   logger: logger,
   sequelize: sequelize,
   twitter: twitter,
+  pendingTwitterRequests: pendingTwitterRequests,
   userToFollow: userToFollow,
   remoteUpdateBlocks: remoteUpdateBlocks,
   gracefulShutdown: gracefulShutdown,
   statsServer: statsServer
 };
-})();

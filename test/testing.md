@@ -75,13 +75,13 @@ _(Automated by `integration/block_low_follower_users_test.js`)_
 
 - Log on with @blocksAlot.
 - Visit /settings, ensure share blocks is disabled.
-- Enable share blocks. Verify page reloads, link to /show-blocks/XYZ appears.
-- Click link to /show-blocks/XYZ. Verify it says "User @blocksAlot is blocking ..."
+- Enable share blocks. Verify page reloads, link to /show-mutes/users/XYZ appears.
+- Click link to /show-mutes/users/XYZ. Verify it says "User @blocksAlot is blocking ..."
 - Verify @twestact3 is on the list.
 - Verify @twestact5 is on the list.
 - Verify @twestact6 is on the list.
 - Verify @twestact8 is on the list.
-- Visit /settings, right-click -> Copy link location on /show-blocks/XYZ.
+- Visit /settings, right-click -> Copy link location on /show-mutes/users/XYZ.
 - Log Off from Block Together.
 - Log Off from Twitter.
 - Log On to Twitter with @twestact3.

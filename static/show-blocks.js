@@ -1,5 +1,5 @@
 /**
- * Handle events for /show-blocks/:slug and /my-blocks.
+ * Handle events for /show-mutes/users/:slug and /my-blocks.
  */
 $(function(){
   var author_uid = $('.all-blocks').data('author-uid').toString();
@@ -10,6 +10,19 @@ $(function(){
   if (author_uid === user_uid) {
     $('button.block-all').prop('disabled', true);
   }
+
+  $('.search_by_screen_name').submit(function(e) {
+    var sn = $('#screen_name')
+    if (sn.css('display') == 'none') {
+      sn.show();
+      sn.focus();
+      return false;
+    }
+    if (sn.val() == '') {
+      return false;
+    }
+    return true;
+  });
 
   function errorHandler(jqXHR, textStatus, errorThrown) {
     if (jqXHR && jqXHR.responseJSON && jqXHR.responseJSON.error) {
@@ -97,7 +110,7 @@ $(function(){
   }
 
   $('button').click(function(ev) {
-    if ($('#log-on-form').length > 0) {
+    if ($(ev.target).hasClass('block-all') && $('#log-on-form').length > 0) {
       logOnAndSubscribe();
     } else if ($(ev.target).hasClass('unblock')) {
       doAction('unblock');

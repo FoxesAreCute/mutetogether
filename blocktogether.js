@@ -1,17 +1,15 @@
 'use strict';
-(function() {
 var express = require('express'), // Web framework
-    cluster = require('cluster'),
     url = require('url'),
     bodyParser = require('body-parser'),
     cookieSession = require('cookie-session'),
     crypto = require('crypto'),
+    Buffer = require('buffer').Buffer,
     mu = require('mu2'),          // Mustache.js templating
     passport = require('passport'),
     TwitterStrategy = require('passport-twitter').Strategy,
     Q = require('q'),
     timeago = require('timeago'),
-    constantTimeEquals = require('scmp'),
     setup = require('./setup'),
     actions = require('./actions'),
     updateUsers = require('./update-users'),
@@ -31,7 +29,7 @@ var config = setup.config,
     Subscription = setup.Subscription;
 
 // Maximum size of a block list that can be subscribed to.
-const maxSubscribeSize = 250000;
+const maxSubscribeSize = 125000;
 
 // Look for templates here
 mu.root = __dirname + '/templates';
@@ -43,8 +41,9 @@ function makeApp() {
   app.use(bodyParser.urlencoded({ extended: false }));
   app.use(cookieSession({
     keys: [config.cookieSecret],
-    secureProxy: config.secureProxy
+    secure: config.secureProxy
   }));
+  app.set('trust proxy', 1);
   app.use('/static', express["static"](__dirname + '/static'));
   app.use('/', express["static"](__dirname + '/static'));
   app.use(passport.initialize());
@@ -72,7 +71,7 @@ function makeApp() {
   // below.
   passport.deserializeUser(function(serialized, done) {
     var sessionUser = JSON.parse(serialized);
-    return BtUser.find({
+    return BtUser.findOne({
       where: {
         uid: sessionUser.uid,
         deactivatedAt: null
@@ -87,7 +86,7 @@ function makeApp() {
       // submitting arbitrary valid sessions, but this is nice defence in depth
       // against timing attacks in case the cookie secret gets out.
       if (user &&
-          constantTimeEquals(user.access_token, sessionUser.accessToken)) {
+          crypto.timingSafeEqual(Buffer.from(user.access_token), Buffer.from(sessionUser.accessToken))) {
         done(null, user);
       } else {
         logger.error('Incorrect access token in session for', sessionUser.uid);
@@ -124,7 +123,7 @@ function passportSuccessCallback(accessToken, accessTokenSecret, profile, done) 
   var screen_name = profile.username;
 
   BtUser
-    .find({
+    .findOne({
       where: {
         uid: uid
       }
@@ -193,7 +192,7 @@ app.all('/*', requireAuthentication);
 // CSRF protection. Check the provided CSRF token in the request body against
 // the one in the session.
 app.post('/*', function(req, res, next) {
-  if (!constantTimeEquals(req.session.csrf, req.body.csrf_token) ||
+  if (!crypto.timingSafeEqual(Buffer.from(req.session.csrf), Buffer.from(req.body.csrf_token)) ||
       !req.session.csrf) {
     return next(new HttpError(403, 'Invalid CSRF token.'));
   } else {
@@ -212,7 +211,7 @@ app.all('/*', function(req, res, next) {
 // then store the result in req.searched_user. If the screen name requested is
 // not found, screenNameLookup will not error. It's up to the page itself
 // to decide how to display that information.
-app.get('/show-blocks/*', screenNameLookup);
+app.get('/show-mutes/users/*', screenNameLookup);
 app.get('/actions', screenNameLookup);
 function screenNameLookup(req, res, next) {
   if (req.query.screen_name) {
@@ -334,7 +333,7 @@ function requireAuthentication(req, res, next) {
       req.url == '/favicon.ico' ||
       req.url == '/robots.txt' ||
       req.url.match('/auth/.*') ||
-      req.url.match('/show-blocks/.*') ||
+      req.url.match('/show-mutes/users/.*') ||
       req.url.match('/static/.*')) {
     return next();
   } else if (req.user && req.user.TwitterUser) {
@@ -537,27 +536,56 @@ function validSharedBlocksKey(key) {
   return key && key.match(/^[A-Za-z0-9-_]{40,96}$/);
 }
 
-app.get('/show-blocks/:slug',
+async function downloadCSV(req, res, next, btUser) {
+  var blockBatch = await getLatestBlockBatch(btUser);
+  if (!blockBatch) {
+    res.end('No blocks fetched yet. Please try again soon.');
+    return Q.reject('No blocks fetched yet for ' + btUser.screen_name);
+  }
+  var blocks = await Block.findAll({
+    where: {
+      blockBatchId: blockBatch.id
+    },
+    limit: 1000000
+  });
+  res.header('Content-Type', 'text/csv');
+  res.header('Content-Disposition', 'attachment; filename=' + btUser.screen_name + '-blocklist.csv');
+  blocks.forEach(function (val, index, array) {
+    res.write(val.sink_uid);
+    res.write("\n");
+  })
+  res.end();
+}
+
+app.get('/show-mutes/users/:slug',
   function(req, res, next) {
     var templateFilename;
     var slug = req.params.slug;
+    var isCsv = false;
     if (/\.csv$/.test(slug)) {
       slug = slug.replace(/\.csv$/, "");
-      templateFilename = "show-blocks-csv.mustache";
+      isCsv = true;
     }
     if (!validSharedBlocksKey(slug)) {
       return next(new HttpError(400, 'Invalid parameters'));
     }
     BtUser
-      .find({
-        where: ['deactivatedAt IS NULL AND shared_blocks_key LIKE ?',
-          slug.slice(0, 10) + '%']
+      .findOne({
+        where: {
+          deactivatedAt: null,
+          shared_blocks_key: {
+            [sequelize.Sequelize.Op.like]: slug.slice(0, 10) + '%'
+          }
+        }
       }).then(function(user) {
         // To avoid timing attacks that try and incrementally discover shared
         // block slugs, use only the first part of the slug for lookup, and
-        // check the rest using constantTimeEquals. For details about timing
+        // check the rest using timingSafeEqual. For details about timing
         // attacks see http://codahale.com/a-lesson-in-timing-attacks/
-        if (user && constantTimeEquals(user.shared_blocks_key, slug)) {
+        if (user && crypto.timingSafeEqual(Buffer.from(user.shared_blocks_key), Buffer.from(slug))) {
+          if (isCsv) {
+            return downloadCSV(req, res, next, user);
+          }
           if (req.query.screen_name) {
             return searchBlocks(req, res, next, user);
           } else {
@@ -592,7 +620,7 @@ app.get('/subscribe-on-signup', function(req, res, next) {
       delete req.session.subscribe_on_signup;
       return next(new HttpError(400, 'Invalid parameters'));
     }
-    BtUser.findById(params.author_uid)
+    BtUser.findByPk(params.author_uid)
       .then(function(author) {
       if (!author) {
         return Q.reject('No author found with uid =', params.author_uid);
@@ -646,7 +674,7 @@ app.post('/block-all.json',
         typeof req.body.author_uid === 'string' &&
         validSharedBlocksKey(shared_blocks_key)) {
       BtUser
-        .find({
+        .findOne({
           where: {
             uid: req.body.author_uid,
             deactivatedAt: null
@@ -657,7 +685,8 @@ app.post('/block-all.json',
           // from that shared block list author, and copy each uid onto the
           // blocking user's list.
           if (author &&
-              constantTimeEquals(author.shared_blocks_key, shared_blocks_key)) {
+              crypto.timingSafeEqual(
+                Buffer.from(author.shared_blocks_key), Buffer.from(shared_blocks_key))) {
             logger.info('Subscribing', req.user, 'to list from', author);
             // Note: because of a uniqueness constraint on the [author,
             // subscriber] pair, this will fail if the subscription already
@@ -675,7 +704,7 @@ app.post('/block-all.json',
 
             author.getBlockBatches({
               limit: 1,
-              order: 'complete desc, currentCursor is null, updatedAt desc'
+              order: [['complete', 'desc'], ['updatedAt', 'desc']]
             }).then(function(blockBatches) {
               if (blockBatches && blockBatches.length > 0) {
                 var batch = blockBatches[0];
@@ -764,6 +793,41 @@ app.post('/unsubscribe.json',
       next(new Error('Unsubscribe failed.'));
     });
   });
+
+/**
+ * Queue up unblocks for all users the logged-in user currently blocks.
+ */
+app.post('/unblock-all.json',
+  function(req, res, next) {
+    res.header('Content-Type', 'application/json');
+    req.user.getBlockBatches({
+      limit: 1,
+      order: [['complete', 'desc'], ['updatedAt', 'desc']]
+    }).then(function(blockBatches) {
+      if (blockBatches && blockBatches.length > 0) {
+        var batch = blockBatches[0];
+        // Copy block list into Actions, with appropriate metadata.
+        // Note: Using this instead of actions.queueActions saves a lot
+        // of memory and CPU cycles when unblocking large (>150k) lists.
+        return sequelize.query('INSERT INTO Actions(source_uid, sink_uid, cause_uid, typeNum, statusNum, causeNum, createdAt, updatedAt)\n' +
+          'SELECT ?, sink_uid, NULL, ?, ?, ?, NOW(), NOW()\n'+
+          'FROM Blocks WHERE BlockBatchId = ?', {
+          replacements: [req.user.uid, Action.BLOCK, Action.PENDING, Action.UNBLOCK_ALL, batch.id],
+          type: sequelize.QueryTypes.INSERT
+        }).then(function() {
+          req.user.pendingActions = true;
+          return req.user.save();
+        }).then(function() {
+          res.end(JSON.stringify({
+            unblock_count: batch.size
+          }));
+        });
+      } else {
+        next(new HttpError(400, 'Empty block list.'));
+        return null;
+      }
+  });
+});
 
 /**
  * Given a JSON POST from a My Blocks page, enqueue the appropriate unblocks.
@@ -861,10 +925,14 @@ function getPaginationData(items, perPage, currentPage) {
         active: pageNum === currentPage
       };
     }),
+    ellipsis: pageCount > 10,
     // Previous/next page indices for use in pagination template.
     previous_page: currentPage - 1 || false,
     next_page: currentPage === pageCount ? false : currentPage + 1,
     per_page: perPage
+  }
+  if (paginationData.pages.length > 10) {
+    paginationData.pages = paginationData.pages.slice(0, 10);
   }
   return paginationData;
 }
@@ -895,12 +963,12 @@ function getBlockedUsers(blockBatch, limit, offset) {
     return [blocks, TwitterUser.findAll({
       where: {
         uid: {
-          in: _.map(blocks, 'sink_uid')
+          [sequelize.Sequelize.Op.in]: _.map(blocks, 'sink_uid')
         }
       }
     })];
   }).spread(function(blocks, users) {
-    var indexedUsers = _.indexBy(users, 'uid');
+    var indexedUsers = _.keyBy(users, 'uid');
     // Turn blocks into blocked TwitterUsers
     return blocks.map(function(block) {
       var user = indexedUsers[block.sink_uid];
@@ -959,10 +1027,8 @@ function getLatestBlockBatch(btUser) {
     // Additionally, for users with more than 75k blocks, updateBlocks will run
     // into the rate limit before finishing updating the blocks. The updating
     // will finish after waiting for the rate limit to lift, but in the meantime
-    // it's possible to have multiple non-complete BlockBatches. In that case,
-    // prefer ones with non-null currentCursors, i.e. those that have stored at
-    // least some blocks.
-    order: 'complete desc, currentCursor is null, updatedAt desc'
+    // it's possible to have multiple non-complete BlockBatches.
+    order: [['complete', 'desc'], ['updatedAt', 'desc']]
   });
 }
 
@@ -980,19 +1046,14 @@ function showBlocks(req, res, next, btUser, ownBlocks, templateFilename) {
     user_uid = user.uid;
   }
 
-  if (/csv/.test(templateFilename)) {
-    res.header('Content-Type', 'text/csv');
-    res.header('Content-Disposition', 'attachment; filename=' + btUser.screen_name + '-blocklist.csv');
-  } else {
-    res.header('Content-Type', 'text/html');
-  }
-
   // For pagination:
   var currentPage = parseInt(req.query.page, 10) || 1,
       perPage = 500;
   if (currentPage < 1) {
     currentPage = 1;
   }
+
+  res.header('Content-Type', 'text/html');
 
   return getLatestBlockBatch(btUser).then(function(blockBatch) {
     if (!blockBatch) {
@@ -1001,7 +1062,7 @@ function showBlocks(req, res, next, btUser, ownBlocks, templateFilename) {
     } else {
       // Check whether the authenticated user is subscribed to this block list.
       var subscriptionPromise =
-        req.user ? Subscription.find({
+        req.user ? Subscription.findOne({
           where: {
             author_uid: btUser.uid,
             subscriber_uid: req.user.uid
@@ -1031,7 +1092,7 @@ function showBlocks(req, res, next, btUser, ownBlocks, templateFilename) {
       // Base URL for appending pagination querystring.
       path_name: url.parse(req.url).pathname,
       shared_blocks_key: req.params.slug,
-      // Whether this is /my-blocks (rather than /show-blocks/foo)
+      // Whether this is /my-blocks (rather than /show-mutes/users/foo)
       own_blocks: ownBlocks,
       subscribed: !!subscription,
       too_big: paginationData.item_count > maxSubscribeSize,
@@ -1079,7 +1140,7 @@ function showActions(req, res, next) {
     // We want to show pending actions before all other actions.
     // This FIELD statement will return 1 if status is 'pending',
     // otherwise 0.
-    order: 'FIELD(statusNum, ' + Action.PENDING + ') DESC, createdAt DESC',
+    order: [sequelize.literal('FIELD(statusNum, ' + Action.PENDING + ')', 'DESC'), ['createdAt', 'DESC']],
     limit: perPage,
     offset: perPage * (currentPage - 1),
     // Get the associated TwitterUser so we can display screen names.
@@ -1121,29 +1182,26 @@ function showActions(req, res, next) {
 }
 
 if (require.main === module) {
-  if (cluster.isMaster) {
-    logger.info('Starting workers.');
-    for (var i = 0; i < config.ports.length; i++) {
-      cluster.fork();
+  var port;
+  process.argv.forEach(function (val, index, array) {
+    if (val === '--port' && index <= array.length - 2) {
+      port = parseInt(array[index + 1], 10);
     }
-    cluster.on('exit', function(worker, code, signal) {
-      logger.error('worker', worker.process.pid, 'died, resurrecting.');
-      cluster.fork();
-    });
-  } else {
-    var port = config.ports[(cluster.worker.id) % config.ports.length];
-
-    setup.statsServer(1000 + port);
-    logger.info('Listening on', port);
-    var server = app.listen(port);
-    process.on('SIGTERM', function () {
-      logger.info('Shutting down port', port);
-      setup.gracefulShutdown();
-      server.close(function () {
-        logger.info('Successfully shut down port', port);
-        process.exit(0);
-      });
-    });
+  })
+  if (port === undefined) {
+    logger.fatal("No --port flag specified on command line.")
+    process.exit(0);
   }
+
+  setup.statsServer(1000 + port);
+  logger.info('Listening on', port);
+  var server = app.listen(port);
+  process.on('SIGTERM', function () {
+    logger.info('Shutting down port', port);
+    setup.gracefulShutdown();
+    server.close(function () {
+      logger.info('Successfully shut down port', port);
+      process.exit(0);
+    });
+  });
 }
-})();

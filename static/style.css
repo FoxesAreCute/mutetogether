@@ -17,11 +17,23 @@ th {
   display: inline;
 }
 
+.search_by_screen_name {
+  display: inline;
+}
+
+.search_by_screen_name input#screen_name {
+  display: none;
+}
+
 .signup-prompt,
 .index-logged-in,
 .log-on-prompt {
   padding: 0.5em;
   border: 1px solid lightgrey;
+}
+
+.disabled {
+  color: lightgrey;
 }
 
 .example-block-list {
@@ -71,6 +83,12 @@ ul.subscriptions {
 }
 
 p, ul {
+  max-width: 35em;
+}
+
+.centered {
+  margin-right: auto;
+  margin-left: auto;
   max-width: 35em;
 }
 

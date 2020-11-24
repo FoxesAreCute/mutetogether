@@ -1,5 +1,4 @@
 'use strict';
-(function() {
 /**
  * Script to block a list of screen names using credentials for a given user id
  */
@@ -21,7 +20,7 @@ if (process.argv.length < 4) {
 }
 
 BtUser
-  .findById(process.argv[2])
+  .findByPk(process.argv[2])
   .then(function(user) {
     var filename = process.argv[3];
 
@@ -47,4 +46,3 @@ BtUser
   }).catch(function(err) {
     logger.error(err);
   });
-})();

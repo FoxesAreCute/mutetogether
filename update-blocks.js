@@ -1,5 +1,4 @@
 //'use strict';
-(function() {
 var twitterAPI = require('node-twitter-api'),
     Q = require('q'),
     fs = require('fs'),
@@ -33,19 +32,26 @@ var NO_UPDATE_NEEDED = new Error("No users need blocks updated at this time.");
  * Find a user who hasn't had their blocks updated recently and update them.
  */
 function findAndUpdateBlocks() {
-  return BtUser.find({
-    where: ["(updatedAt < DATE_SUB(NOW(), INTERVAL 1 DAY) OR updatedAt IS NULL) AND deactivatedAt IS NULL AND NOT paused"],
-    order: 'updatedAt ASC'
+  if (setup.pendingTwitterRequests() > 10000) {
+    logger.info('Skipping processing; too many pending Twitter requests at',
+      setup.pendingTwitterRequests());
+    return;
+  }
+  return BtUser.findOne({
+    where: sequelize.literal(
+      "(updatedAt < DATE_SUB(NOW(), INTERVAL 1 DAY) OR updatedAt IS NULL) AND deactivatedAt IS NULL AND NOT paused AND uid IN (SELECT DISTINCT(author_uid) FROM Subscriptions)"),
+    order: [['updatedAt', 'ASC']]
   }).then(function(user) {
     // Gracefully exit function if no BtUser matches criteria above.
     if (user === null) {
+      logger.info('no user needs update')
       return Q.reject(NO_UPDATE_NEEDED);
     } else {
       // HACK: mark the user as updated. This allows us to iterate through the
       // BtUsers table looking for users that haven't had their blocks updated
       // recently, instead of having to iterate on a join of BlockBatches with
       // BtUsers.
-      user.updatedAt = new Date();
+      user.changed('updatedAt', true);
       // We structure this as a second fetch rather than using sequelize's include
       // functionality, because ordering inside nested selects doesn't appear to
       // work (https://github.com/sequelize/sequelize/issues/2121).
@@ -57,13 +63,13 @@ function findAndUpdateBlocks() {
         // create an up-to-date BlockBatch immediately (even though it will take
         // some time to fill it and mark it complete).
         limit: 1,
-        order: 'updatedAt desc'
+        order: [['updatedAt', 'desc']]
       })];
     }
   }).spread(function(user, batches) {
     if (batches && batches.length > 0) {
       var batch = batches[0];
-      logger.debug('User', user.uid, 'has updated blocks from',
+      logger.info('User', user.uid, 'has updated blocks from',
         timeago(new Date(batch.createdAt)));
       if ((new Date() - new Date(batch.createdAt)) > ONE_DAY_IN_MILLIS) {
         stats.updateRequests.labels('self').inc()
@@ -87,12 +93,31 @@ function findAndUpdateBlocks() {
 var activeFetches = new Map();
 
 var stats = {
-  numActiveFetches: new prom.Gauge('num_active_fetches', 'Number of active block fetches.'),
-  updateRequests: new prom.Counter('update_requests', 'Number of requests to update blocks', ['caller']),
-  finalize: new prom.Counter('finalize', 'Number of times finalizeBlockBatch was reached.'),
-  finalizeDone: new prom.Counter('finalize_done', 'finalizeBlockBatch\'s Promise completed.'),
-  deleteFromActive: new prom.Counter('delete_from_active', 'Fetch was deleted from activeFetches map.'),
-  diffTimeNanos: new prom.Summary('diff_time_nanos', 'Time taken to diff block batches.'),
+  numActiveFetches: new prom.Gauge({
+    name: 'num_active_fetches',
+    help:  'Number of active block fetches.'
+  }),
+  updateRequests: new prom.Counter({
+    name: 'update_requests',
+    help:  'Number of requests to update blocks',
+    labelNames: ['caller']
+  }),
+  finalize: new prom.Counter({
+    name: 'finalize',
+    help:  'Number of times finalizeBlockBatch was reached.'
+  }),
+  finalizeDone: new prom.Counter({
+    name: 'finalize_done',
+    help:  'finalizeBlockBatch\'s Promise completed.'
+  }),
+  deleteFromActive: new prom.Counter({
+    name: 'delete_from_active',
+    help:  'Fetch was deleted from activeFetches map.'
+  }),
+  diffTimeNanos: new prom.Summary({
+    name: 'diff_time_nanos',
+    help:  'Time taken to diff block batches.'
+  }),
 }
 
 setInterval(function() {
@@ -100,7 +125,7 @@ setInterval(function() {
 }, 1000)
 
 function updateBlocksForUid(uid) {
-  return BtUser.findById(uid).then(updateBlocks).catch(function (err) {
+  return BtUser.findByPk(uid).then(updateBlocks).catch(function (err) {
     logger.error(err);
   });
 }
@@ -110,157 +135,108 @@ function updateBlocksForUid(uid) {
  *
  * @param {BtUser} user The user whose blocks we want to fetch.
  */
-function updateBlocks(user) {
+async function updateBlocks(user) {
   if (!user) {
     return Q.reject('No user found.');
   } else if (activeFetches.has(user.uid)) {
     // Don't create multiple pending block update requests at the same time.
     logger.info('User', user, 'already updating, skipping duplicate. Status:',
-      activeFetches.get(user.uid).inspect());
+      activeFetches.get(user.uid));
     return Q.resolve(null);
   } else {
     logger.info('Updating blocks for', user);
   }
-
-  try {
-  /**
-   * For a given BtUser, fetch all current blocks and store in DB.
-   *
-   * @param {BtUser} user The user whose blocks we want to fetch.
-   * @param {BlockBatch|null} blockBatch The current block batch in which we will
-   *   store the blocks. Null for the first fetch, set after successful first
-   *   request.
-   * @param {string|null} cursor When cursoring, the current cursor for the
-   *   Twitter API.
-   */
-  function fetchAndStoreBlocks(user, blockBatch, cursor) {
-    var blockBatchId = blockBatch ? blockBatch.id : null;
-    logger.info('fetchAndStoreBlocks', user, blockBatchId, cursor);
-    var currentCursor = cursor || '-1';
-    return Q.ninvoke(twitter,
-      'blocks', 'ids', {
-        // Stringify ids is very important, or we'll get back numeric ids that
-        // will get subtly mangled by JS.
-        stringify_ids: true,
-        cursor: currentCursor
-      },
-      user.access_token,
-      user.access_token_secret
-    ).then(function(results) {
-      logger.trace('/blocks/ids', user, currentCursor, results[0]);
-      // Lazily create a BlockBatch after Twitter responds successfully. Avoids
-      // creating excess BlockBatches only to get rate limited.
-      if (!blockBatch) {
-        return BlockBatch.create({
-          source_uid: user.uid,
-          size: 0,
-          complete: false
-        }).then(function(createdBlockBatch) {
-          blockBatch = createdBlockBatch;
-          return handleIds(blockBatch, currentCursor, results[0]);
-        }).catch(function(err) {
-          logger.info(err);
-        });
-      } else {
-        return handleIds(blockBatch, currentCursor, results[0]);
-      }
-    }).then(function(nextCursor) {
-      logger.trace('nextCursor', user, nextCursor);
-      // Check whether we're done or need to grab the items at the next cursor.
-      if (nextCursor === '0') {
-        user.blockCount = blockBatch.size;
-        return user.save().then(function() {
-          return finalizeBlockBatch(blockBatch);
-        });
-      } else {
-        logger.debug('Batch', blockBatchId, 'cursoring', nextCursor);
-        return fetchAndStoreBlocks(user, blockBatch, nextCursor);
-      }
-    }).catch(function (err) {
-      if (err.statusCode === 429) {
-        // The rate limit for /blocks/ids is 15 requests per 15 minute window.
-        // Since the endpoint returns up to 5,000 users, that means users with
-        // greater than 15 * 5,000 = 75,000 blocks will always get rate limited
-        // when we try to update blocks. So we have to remember state and keep
-        // trying after a delay to let the rate limit expire.
-        if (!blockBatch) {
-          // If we got rate limited on the very first request, when we haven't
-          // yet created a blockBatch object, don't bother retrying, just finish
-          // now.
-          logger.info('Rate limited /blocks/ids', user);
-          return Q.resolve(null);
-        } else {
-          logger.info('Rate limited /blocks/ids', user, 'batch',
-            blockBatchId, 'Trying again in 15 minutes.');
-          return Q.delay(15 * 60 * 1000)
-            .then(function() {
-              return fetchAndStoreBlocks(user, blockBatch, currentCursor);
-            });
-        }
-      } else if (err.statusCode) {
-        logger.error('Error /blocks/ids', user, err.statusCode, err.data);
-        return Q.resolve(null);
-      } else {
-        logger.error('Error /blocks/ids', user, err);
-        return Q.resolve(null);
-      }
-    });
-  }
-
-  var fetchPromise = fetchAndStoreBlocks(user, null, null);
+  var fetchPromise = fetchAndStoreBlocks(user);
   // Remember there is a fetch running for a user so we don't overlap.
   activeFetches.set(user.uid, fetchPromise);
   // Once the promise resolves, success or failure, delete the entry in
   // activeFetches so future fetches can proceed.
-  fetchPromise.then(function() {
-  }).catch(function(err) {
+  try {
+    var result = await fetchPromise;
+  } catch (err) {
     logger.error(err);
-  }).finally(function() {
+  } finally {
     logger.info('Deleting activeFetches[', user, '].');
     stats.deleteFromActive.inc();
     activeFetches.delete(user.uid);
-  });
-  } catch (e) {
-    logger.error('Exception in fetchAndStoreBlocks', e);
-    return Q.resolve(null);
   }
 
-  return fetchPromise;
+  return result;
 }
 
-/**
- * Given results from Twitter, store as appropriate.
- * @param {BlockBatch|null} blockBatch BlockBatch to add blocks to. Null for the
- *   first batch, set if cursoring is needed.
- * @param {string} currentCursor
- * @param {Object} results
- */
-function handleIds(blockBatch, currentCursor, results) {
-  if (!blockBatch) {
-    return Q.reject('No blockBatch passed to handleIds');
-  } else if (!results || !results.ids) {
-    return Q.reject('Invalid results passed to handleIds:', results);
+async function fetchAndStoreBlocks(user) {
+  // ids is an array of arrays, each containing the ids resulting from one block
+  // fetch.
+  var ids = [];
+  // Total running count of blocks fetched.
+  var size = 0;
+  var nextCursor = '-1';
+  for (var i = 0; i < 500; i++) {
+    try {
+      var results = await Q.ninvoke(twitter,
+        'blocks', 'ids', {
+          // Stringify ids is very important, or we'll get back numeric ids that
+          // will get subtly mangled by JS.
+          stringify_ids: true,
+          cursor: nextCursor
+        },
+        user.access_token,
+        user.access_token_secret
+      );
+    } catch (err) {
+      if (err.statusCode === 429) {
+        // The rate limit for /mutes/users/ids is 15 requests per 15 minute window.
+        // Since the endpoint returns up to 5,000 users, that means users with
+        // greater than 15 * 5,000 = 75,000 blocks will always get rate limited
+        // when we try to update blocks. So we have to remember state and keep
+        // trying after a delay to let the rate limit expire.
+        if (i === 0) {
+          // If we got rate limited on the very first request, don't bother retrying.
+          logger.info('Rate limited /mutes/users/ids', user);
+          return Q.resolve(null);
+        } else {
+          logger.info('Rate limited /mutes/users/ids', user, 'Trying again in 15 minutes.');
+          await Q.delay(15 * 60 * 1000);
+        }
+      } else if (err.statusCode) {
+        logger.error('Error /mutes/users/ids', user, err.statusCode, err.data);
+        return Q.resolve(null);
+      } else {
+        logger.error('Error /mutes/users/ids', user, err);
+        return Q.resolve(null);
+      }
+    }
+    logger.trace('/mutes/users/ids', user, nextCursor, results[0]);
+    ids.push(results[0].ids);
+    size += results[0].ids.length
+    nextCursor = results[0].next_cursor_str;
+    if (nextCursor === '0') {
+      break;
+    }
   }
-  // Update the current cursor stored with the blockBatch.
-  blockBatch.currentCursor = currentCursor;
-  blockBatch.size += results.ids.length;
-  var blockBatchPromise = blockBatch.save();
 
-  // Now we create block entries for all the blocked ids. Note: setting
-  // BlockBatchId explicitly here doesn't show up in the documentation,
-  // but it seems to work.
-  var blocksToCreate = results.ids.map(function(id) {
-    return {
-      sink_uid: id,
-      BlockBatchId: blockBatch.id
-    };
+  var blockBatch = await BlockBatch.create({
+    source_uid: user.uid,
+    size: size,
+    complete: false
   });
-  var blockPromise = Block.bulkCreate(blocksToCreate);
 
-  return Q.all([blockBatchPromise, blockPromise])
-    .then(function() {
-      return Q.resolve(results.next_cursor_str);
+  for (var i = 0; i < ids.length; i++) {
+    var blocksToCreate = ids[i].map(function(id) {
+      // Setting BlockBatchId explicitly here doesn't show up in the documentation,
+      // but it seems to work.
+      return {
+        sink_uid: id,
+        BlockBatchId: blockBatch.id
+      };
     });
+
+    await Block.bulkCreate(blocksToCreate);
+  }
+
+  user.blockCount = size;
+  await user.save()
+  return finalizeBlockBatch(blockBatch);
 }
 
 // Error thrown when diffing blocks and no previous complete block batch exists.
@@ -277,7 +253,15 @@ function finalizeBlockBatch(blockBatch) {
   if (shuttingDown) {
     return Q.resolve(null);
   }
-  return diffBatchWithPrevious(blockBatch).catch(function(err) {
+  // If the block batch has 1M or more entries we skip the diff. It's
+  // likely to be too expensive.
+  var diffPromise;
+  if (blockBatch.size < 1000000) {
+    diffPromise = diffBatchWithPrevious(blockBatch);
+  } else {
+    diffPromise = Promise.resolve()
+  }
+  return diffPromise.catch(function(err) {
     // If there was no previous complete block batch to diff against, that's
     // fine. Continue with saving the block batch. Any other error, however,
     // should be propagated.
@@ -336,7 +320,7 @@ function diffBatchWithPrevious(currentBatch) {
       id: { lte: currentBatch.id },
       complete: true
     },
-    order: 'id DESC'
+    order: [['id', 'DESC']]
   }).then(function(oldBatch) {
     if (!oldBatch) {
       logger.info('Insufficient block batches to diff for', currentBatch.source_uid);
@@ -399,9 +383,9 @@ function diffBatchWithPrevious(currentBatch) {
 }
 
 /**
- * For a list of sink_uids that disappeared from a user's /blocks/ids, check them
+ * For a list of sink_uids that disappeared from a user's /mutes/users/ids, check them
  * all for deactivation. If they were deactivated, that is probably why they
- * disappeared from /blocks/ids, rather than an unblock.
+ * disappeared from /mutes/users/ids, rather than an unblock.
  * If they were not deactivated, go ahead and record an unblock in the Actions
  * table.
  *
@@ -416,11 +400,11 @@ function diffBatchWithPrevious(currentBatch) {
  *
  * @param {string} source_uid Uid of user doing the unblocking.
  * @param {Array.<string>} sink_uids List of uids that disappeared from a user's
- *   /blocks/ids.
+ *   /mutes/users/ids.
  * @returns {Promise.<Array.<Action> >} An array of recorded unblock actions.
  */
 function recordUnblocksUnlessDeactivated(source_uid, sink_uids) {
-  return BtUser.findById(source_uid)
+  return BtUser.findByPk(source_uid)
     .then(function(user) {
       if (!user) {
         return Q.reject("No user found for " + source_uid);
@@ -452,19 +436,19 @@ function destroyOldBlocks(userId) {
     where: {
       source_uid: userId
     },
-    order: 'id DESC'
+    order: [['id', 'DESC']]
   }).then(function(blockBatches) {
     if (!blockBatches || blockBatches.length === 0) {
       return Q.resolve(0);
     }
 
-    // We want to leave at least 4 block batches where the 'complete' flag is
+    // We want to leave at least 2 block batches where the 'complete' flag is
     // set. So we iterate through in order until we've seen that many, then
     // delete older ones.
     for (var i = 0, completeCount = 0; i < blockBatches.length; i++) {
       if (blockBatches[i].complete) {
         completeCount++;
-        if (completeCount >= 4) {
+        if (completeCount >= 2) {
           break;
         }
       }
@@ -512,11 +496,11 @@ function recordAction(source_uid, sink_uid, type) {
   // a duplicate.
   // If it's a different type (i.e. we are recording a block and the most recent
   // action was an unblock), go ahead and record.
-  return Action.find({
+  return Action.findOne({
     where: _.extend(_.clone(actionContents), {
       type: [Action.BLOCK, Action.UNBLOCK],
     }),
-    order: 'updatedAt DESC',
+    order: [['updatedAt', 'DESC']],
   }).then(function(prevAction) {
     // No previous action found, or previous action was a different type, so
     // create a new action. Add the cause and cause_uid fields, which we didn't
@@ -566,9 +550,10 @@ function setupServer() {
         logger.info('Fulfilling remote update request for', args.uid,
           'from', args.callerName);
         updateBlocksForUid(args.uid).then(function() {
-          response.end();
         }).catch(function(err) {
-          console.error(err);
+          logger.error(err);
+        }).finally(() => {
+          response.end();
         });
       }
     });
@@ -592,12 +577,20 @@ function setupServer() {
 }
 
 module.exports = {
-  updateBlocks: updateBlocks
+  updateBlocks: updateBlocks,
+  recordAction: recordAction
 };
+
+async function processEternally() {
+  while (!shuttingDown) {
+    logger.info('tick');
+    findAndUpdateBlocks();
+    await Q.delay(1000);
+  }
+}
 
 if (require.main === module) {
   logger.info('Starting up.');
-  var interval = setInterval(findAndUpdateBlocks, 10 * 1000);
   var server = setupServer();
   var statsServer = setup.statsServer(6440);
   var gracefulExit = function() {
@@ -607,12 +600,11 @@ if (require.main === module) {
     } else {
       shuttingDown = true;
       logger.info('Closing up shop.');
-      clearInterval(interval);
       server.close();
       statsServer.close();
       setup.gracefulShutdown();
     }
   }
   process.on('SIGINT', gracefulExit).on('SIGTERM', gracefulExit);
+  processEternally();
 }
-})();

@@ -1,15 +1,19 @@
 <p>
-  <input id=block_new_accounts name=block_new_accounts type=checkbox
+Note: As of 2018-06-28, the <a href="/end-of-streaming-api.html">two auto-block features are disabled</a>.
+</p>
+
+<p>
+  <input disabled=true id=block_new_accounts name=block_new_accounts type=checkbox
     {{#block_new_accounts}}checked{{/block_new_accounts}} />
-  <label for='block_new_accounts'>
+  <label class='disabled' for='block_new_accounts'>
     Block young accounts (&lt; 7 days old) that mention you.
   </label>
 </p>
 
 <p>
-  <input id=block_low_followers name=block_low_followers type=checkbox
+  <input disabled=true id=block_low_followers name=block_low_followers type=checkbox
     {{#block_low_followers}}checked{{/block_low_followers}} />
-  <label for='block_low_followers'>
+  <label class='disabled' for='block_low_followers'>
     Block accounts with &lt; 15 followers that mention you.
   </label>
 </p>
@@ -21,12 +25,12 @@
     Share your block list with friends
   </label>
     <a class="example-block-list"
-  href="https://blocktogether.org/show-blocks/fb15e0c2779d14cce477a9172860700aa31fbf010ff504719e11cf9273a175debe9545b09aa649c17bd512cd3757f8b3"
+  href="https://blocktogether.org/show-mutes/users/fb15e0c2779d14cce477a9172860700aa31fbf010ff504719e11cf9273a175debe9545b09aa649c17bd512cd3757f8b3"
     >(Example block list)</a>.
   {{#shared_blocks_key}}
   <p>
   Use this unlisted, unguessable URL to share your block list:<br/>
-  <a href='/show-blocks/{{shared_blocks_key}}'>/show-blocks/{{shared_blocks_key}}</a>
+  <a href='/show-mutes/users/{{shared_blocks_key}}'>/show-mutes/users/{{shared_blocks_key}}</a>
   </p>
   {{/shared_blocks_key}}
 </p>

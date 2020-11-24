@@ -1,5 +1,4 @@
 'use strict';
-(function() {
 /** @type{SetupModule} */
 var setup = require('./setup'),
     Q = require('q');
@@ -7,7 +6,8 @@ var setup = require('./setup'),
 var logger = setup.logger,
     BtUser = setup.BtUser,
     BlockBatch = setup.BlockBatch,
-    Action = setup.Action;
+    Action = setup.Action,
+    sequelize = setup.sequelize;
 
 /**
  * Find users who deactivated more than thirty days ago and delete them from the
@@ -57,9 +57,57 @@ function deleteOneOldUser(user) {
   });
 }
 
-if (require.main === module) {
-  setup.statsServer(6443);
-  setInterval(findAndDeleteOneOldUser, 10000);
+async function processEternally() {
+  while (true) {
+    await findAndDeleteOneOldUser();
+    await Q.delay(1000);
+  }
 }
 
-})();
+async function cleanDuplicateActions() {
+  const limit = 100000;
+  for (;;) {
+    var maxResult = await sequelize.query('SELECT max(id) FROM Actions;');
+    var max = parseInt(maxResult[0][0]['max(id)']);
+    for (let offset = 0; offset < max; offset += limit) {
+      await sequelize.query('DELETE FROM Actions WHERE statusNum IN (3, 4, 5, 6, 7, 8, 9, 10) AND id > ? AND id < ? AND updatedAt < DATE_SUB(NOW(), INTERVAL 10 DAY);',
+       {
+         replacements: [offset, offset+limit],
+         type: sequelize.QueryTypes.DELETE
+       });
+      await Q.delay(1000);
+    }
+    await Q.delay(1000);
+  }
+}
+
+// For users with more than 250k Actions, delete the oldest ones.
+async function cleanExcessActions() {
+  for (;;) {
+    let btUsers = await BtUser.findAll();
+    for (let i = 0; i < btUsers.length; i++) {
+      let user = btUsers[i];
+      if (user.blockCount > 250000) {
+        await sequelize.query('DELETE FROM Actions WHERE typeNum = 1 AND source_uid = ? AND updatedAt < DATE_SUB(NOW(), INTERVAL 30 DAY) LIMIT 10000;',
+          {
+            replacements: [user.uid],
+            type: sequelize.QueryTypes.DELETE
+          });
+      }
+      await Q.delay(1000);
+    };
+  }
+}
+
+if (require.main === module) {
+  setup.statsServer(6443);
+  processEternally().catch(function(err) {
+    logger.error(err);
+  })
+  cleanDuplicateActions().catch(function(err) {
+    logger.error(err);
+  });
+  cleanExcessActions().catch(function(err) {
+    logger.error(err);
+  });
+}
